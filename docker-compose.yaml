@@ -5,6 +5,7 @@ version: '3.7'
 
 volumes:
   mongo_data: {}
+  neo4j_data: {}
 
 networks:
   crawler_net:
@@ -46,3 +47,15 @@ services:
     networks:
       - crawler_net
     restart: on-failure
+
+  neo4j-db:
+    image: neo4j:latest
+    ports:
+      - "7474:7474" # Neo4j web interface
+      - "7687:7687" # Neo4j Bolt protocol
+    environment:
+      NEO4J_AUTH: neo4j/11111111
+    volumes:
+      - neo4j_data:/data
+    networks:
+      - crawler_net

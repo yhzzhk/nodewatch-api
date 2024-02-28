@@ -15,11 +15,13 @@ import (
 	"eth2-crawler/store/peerstore"
 	"eth2-crawler/store/record"
 	"time"
+	"fmt"
 
 	"github.com/protolambda/zrnt/eth2/beacon/common"
 
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/enode"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 type crawler struct {
@@ -38,6 +40,7 @@ type crawler struct {
 // resolver holds methods of discovery v5
 type resolver interface {
 	Ping(n *enode.Node) error
+	LookupWorker(n *enode.Node) ([]*enode.Node, error)
 }
 
 // newCrawler inits new crawler service
@@ -94,7 +97,9 @@ func (c *crawler) storePeer(ctx context.Context, node *enode.Node) {
 	}
 	// filter only eth2 nodes
 	eth2Data, err := util.ParseEnrEth2Data(node)
+	// fmt.Printf("从enr解析出来的eth2data是%v\n", eth2Data)
 	if err != nil { // not eth2 nodes
+		log.Error("error in parseenreth2data", log.Ctx{"err": err})
 		return
 	}
 	log.Debug("found a eth2 node", log.Ctx{"node": node})
@@ -104,11 +109,80 @@ func (c *crawler) storePeer(ctx context.Context, node *enode.Node) {
 	if err != nil {
 		return
 	}
+	
 	// save to db if not exists
 	err = c.peerStore.Create(ctx, peer)
 	if err != nil {
 		log.Error("err inserting peer", log.Ctx{"err": err, "peer": peer.String()})
 	}
+
+	//请求eth2节点的邻居节点信息
+	enodes, err := c.disc.LookupWorker(node)
+	if err != nil {
+		fmt.Println("节点FindAllNeighbors失败:", node.ID().GoString())
+	}
+	fmt.Println("邻居节点数量:", len(enodes))
+	if len(enodes) != 0 {
+		err = AddPeerToNeo4j(node, enodes)
+		if err != nil {
+			fmt.Printf("节点%v的邻居节点关系写入失败:%v\n", node, err)
+		}
+	}
+}
+
+func AddPeerToNeo4j(n *enode.Node, r []*enode.Node) error {
+	// 创建 cqlconnection 实例
+	ctx := context.Background()
+	conn := NewCQLConnection(ctx)
+
+	// 处理交互节点 n
+	interactionNodeId := n.ID().String()
+	interactionNodeIp := n.IP().String()
+	interactionNodeEnr := n.String() // 获取ENR的方式
+
+	addtime := time.Now().Format(time.RFC3339) // 记录节点添加和更新时间
+
+	// 更新或创建交互节点，并将 iffindnode 设置为 true
+	_, err := conn.CreateOrUpdateNode(ctx, interactionNodeId, interactionNodeIp, true, interactionNodeEnr, addtime)
+	if err != nil {
+		// 如果发生错误，记录并处理
+		fmt.Printf("Failed to create or update interaction node: %v\n", err)
+		return err
+	}
+	// 如果交互节点已存在，删除其所有现有的向外关系
+	err = conn.DeleteExistingRelations(ctx, interactionNodeId)
+	if err != nil {
+		// 如果发生错误，记录并处理
+		fmt.Printf("Failed to delete existing relations for interaction node: %v\n", err)
+		return err
+	}
+
+	// 处理邻居节点列表 r
+	for _, neighbor := range r {
+		neighborId := neighbor.ID().String()
+		neighborIp := neighbor.IP().String()
+		neighborEnr := neighbor.String()
+		// 这里需要一种方法来计算或获取两个节点之间的距离
+		neighborDistance := enode.LogDist(n.ID(), neighbor.ID()) - 239
+
+		// 更新或创建邻居节点，并将 iffindnode 设置为 false
+		_, err = conn.CreateOrUpdateNode(ctx, neighborId, neighborIp, false, neighborEnr, addtime)
+		if err != nil {
+			// 如果发生错误，记录并继续处理下一个邻居节点
+			fmt.Printf("Failed to create or update neighbor node: %v\n", err)
+			continue
+		}
+
+		// 创建从交互节点到邻居节点的关系
+		err = conn.CreateRelation(ctx, interactionNodeId, neighborId, neighborDistance)
+		if err != nil {
+			// 如果发生错误，记录并继续处理下一个邻居节点
+			fmt.Printf("Failed to create relation: %v\n", err)
+			continue
+		}
+	}
+
+	return nil
 }
 
 func (c *crawler) updatePeer(ctx context.Context) {
@@ -229,6 +303,23 @@ func (c *crawler) collectNodeInfoRetryer(ctx context.Context, peer *models.Peer)
 		} else {
 			peer.SetProtocolVersion(pv)
 		}
+		
+		var protocols []string
+		protocols, err = c.host.GetProtocols(peer.ID)
+		if err != nil {
+			continue
+		} else {
+			fmt.Println("支持的协议列表:", protocols)
+		}
+
+		var alladdrs []ma.Multiaddr
+		alladdrs, err = c.host.GetAllAddrs(peer.ID)
+		if err != nil {
+			continue
+		} else {
+			fmt.Println("AllAddrs:", alladdrs)
+		}
+
 		// set sync status
 		peer.SetSyncStatus(int64(status.HeadSlot))
 		log.Info("successfully collected all info", peer.Log())

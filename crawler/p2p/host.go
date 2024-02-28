@@ -19,6 +19,8 @@ import (
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
+
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 // Client represent custom p2p client
@@ -35,6 +37,9 @@ type Host interface {
 	GetAgentVersion(peer.ID) (string, error)
 	FetchStatus(sFn reqresp.NewStreamFn, ctx context.Context, peer *models.Peer, comp reqresp.Compression) (
 		*beacon.Status, error)
+
+	GetAllAddrs(peer.ID) ([]ma.Multiaddr, error)
+	GetProtocols(peer.ID) ([]string, error)
 }
 
 type idService interface {
@@ -143,4 +148,34 @@ func (c *Client) FetchStatus(sFn reqresp.NewStreamFn, ctx context.Context, peer 
 			return nil
 		})
 	return data, err
+}
+
+func (c *Client) GetAllAddrs(peerID peer.ID) ([]ma.Multiaddr, error) {
+	addrs := c.Peerstore().Addrs(peerID)
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("no addresses found for peer: %s", peerID)
+	}
+	return addrs, nil
+}
+
+func (c *Client) GetProtocols(peerID peer.ID) ([]string, error) {
+	protocols, err := c.Peerstore().GetProtocols(peerID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting protocols for peer %s: %w", peerID, err)
+	}
+	if len(protocols) == 0 {
+		return nil, fmt.Errorf("no protocols found for peer: %s", peerID)
+	}
+	return protocols, nil
+}
+
+func (c *Client) SupportsProtocols(peerID peer.ID) ([]string, error) {
+	protocols, err := c.Peerstore().GetProtocols(peerID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting protocols for peer %s: %w", peerID, err)
+	}
+	if len(protocols) == 0 {
+		return nil, fmt.Errorf("no protocols found for peer: %s", peerID)
+	}
+	return protocols, nil
 }

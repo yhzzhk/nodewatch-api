@@ -50,6 +50,12 @@ func Initialize(peerStore peerstore.Provider, historyStore record.Provider, ipRe
 		return err
 	}
 
+	// //print出disc的本地table中所有node信息
+	// nodes := disc.AllNodes()
+	// for _, node := range nodes {
+	// 	fmt.Printf("Node ID: %v, Record: %v\n", node.ID(), node.Record())
+	// }
+
 	listenAddrs, err := multiAddressBuilder(listenCfg.listenAddress, listenCfg.listenPORT)
 	if err != nil {
 		return err

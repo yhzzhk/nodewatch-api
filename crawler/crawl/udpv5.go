@@ -19,6 +19,7 @@ import (
 
 // startV5 starts an ephemeral discovery v5 node.
 func startV5(listenCfg *listenConfig) (*discover.UDPv5, error) {
+	fmt.Println("开始discv5")
 	ln, config, err := getDiscoveryConfig(listenCfg)
 	if err != nil {
 		return nil, err
