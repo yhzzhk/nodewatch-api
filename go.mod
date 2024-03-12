@@ -134,4 +134,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/ethereum/go-ethereum v1.10.12 => github.com/yhzzhk/go-ethereum v0.0.0-20240228044008-0cf0207d381b
+replace github.com/ethereum/go-ethereum v1.10.12 => github.com/yhzzhk/go-ethereum v0.0.0-20240311085541-22c9311036c8

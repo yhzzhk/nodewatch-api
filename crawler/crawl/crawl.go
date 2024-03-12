@@ -14,8 +14,8 @@ import (
 	ipResolver "eth2-crawler/resolver"
 	"eth2-crawler/store/peerstore"
 	"eth2-crawler/store/record"
-	"time"
 	"fmt"
+	"time"
 
 	"github.com/protolambda/zrnt/eth2/beacon/common"
 
@@ -35,18 +35,20 @@ type crawler struct {
 	host            p2p.Host
 	jobs            chan *models.Peer
 	jobsConcurrency int
+	semaphoreChan   chan struct{} // 用于控制邻居节点发现并发的 channel
 }
 
 // resolver holds methods of discovery v5
 type resolver interface {
 	Ping(n *enode.Node) error
 	LookupWorker(n *enode.Node) ([]*enode.Node, error)
+	LookupWorkerall(n *enode.Node) ([]*enode.Node, error)
 }
 
 // newCrawler inits new crawler service
 func newCrawler(disc resolver, peerStore peerstore.Provider, historyStore record.Provider,
 	ipResolver ipResolver.Provider, privateKey *ecdsa.PrivateKey, iter enode.Iterator,
-	host p2p.Host, jobConcurrency int) *crawler {
+	host p2p.Host, jobConcurrency int, maxConcurrentTasks int) *crawler {
 	c := &crawler{
 		disc:            disc,
 		peerStore:       peerStore,
@@ -58,6 +60,7 @@ func newCrawler(disc resolver, peerStore peerstore.Provider, historyStore record
 		host:            host,
 		jobs:            make(chan *models.Peer, jobConcurrency),
 		jobsConcurrency: jobConcurrency,
+		semaphoreChan:   make(chan struct{}, maxConcurrentTasks), // 初始化 channel，容量为 maxConcurrentTasks
 	}
 	return c
 }
@@ -84,6 +87,7 @@ func (c *crawler) runIterator(ctx context.Context, doneCh chan enode.Iterator, i
 	for it.Next() {
 		select {
 		case c.nodeCh <- it.Node():
+			// fmt.Printf("nodech通道情况: len(nodeCh)=%d, capnodeCh)=%d\n", len(c.nodeCh), cap(c.nodeCh))
 		case <-ctx.Done():
 			return
 		}
@@ -109,25 +113,88 @@ func (c *crawler) storePeer(ctx context.Context, node *enode.Node) {
 	if err != nil {
 		return
 	}
-	
+
 	// save to db if not exists
 	err = c.peerStore.Create(ctx, peer)
 	if err != nil {
 		log.Error("err inserting peer", log.Ctx{"err": err, "peer": peer.String()})
 	}
 
-	//请求eth2节点的邻居节点信息
-	enodes, err := c.disc.LookupWorker(node)
-	if err != nil {
-		fmt.Println("节点FindAllNeighbors失败:", node.ID().GoString())
-	}
-	fmt.Println("邻居节点数量:", len(enodes))
-	if len(enodes) != 0 {
-		err = AddPeerToNeo4j(node, enodes)
+	// //请求eth2节点的邻居节点信息
+	// enodes, err := c.disc.LookupWorker(node)
+	// if err != nil {
+	// 	fmt.Println("findnode失败:", node.ID().GoString())
+	// } else {
+	// 	fmt.Println("findnode返回邻居节点数量:", len(enodes))
+	// 	// err = AddPeerToNeo4j(node, enodes)
+	// 	// if err != nil {
+	// 	// 	fmt.Printf("节点%v的邻居节点关系写入失败:%v\n", node, err)
+	// 	// }
+	// 	// 握手之后请求多次节点邻居
+	// 	enodesall, err := c.disc.LookupWorkerall(node)
+	// 	if err != nil {
+	// 		fmt.Println("节点FindAllNeighbors失败:", node.ID().GoString())
+	// 	} else {
+	// 		fmt.Println("邻居节点数量:", len(enodesall))
+	// 		// err = AddPeerToNeo4j(node, enodesall)
+	// 		// if err != nil {
+	// 		// 	fmt.Printf("节点%v的邻居节点关系写入失败:%v\n", node, err)
+	// 		// }
+	// 		enodes = append(enodes, enodesall...)
+	// 		// 去重
+	// 		uniqueNodes := make([]*enode.Node, 0)
+	// 		seen := make(map[enode.ID]struct{})
+	// 		for _, node := range enodes {
+	// 			if _, ok := seen[node.ID()]; !ok {
+	// 				seen[node.ID()] = struct{}{}
+	// 				uniqueNodes = append(uniqueNodes, node)
+	// 			}
+	// 		}
+	// 		err = AddPeerToNeo4j(node, uniqueNodes)
+	// 		if err != nil {
+	// 			fmt.Printf("节点%v的邻居节点关系写入失败:%v\n", node, err)
+	// 		}
+	// 	}
+	// }
+
+	// 异步执行拓扑探测
+	go func(n *enode.Node) {
+		// 在进行拓扑探测之前，尝试向 semaphoreChan 发送数据
+		// 如果 channel 已满，这里会阻塞，直到 channel 有空间
+		c.semaphoreChan <- struct{}{}
+
+		// 确保在函数退出时，从 semaphoreChan 中接收数据，释放一个位置
+		defer func() {
+			<-c.semaphoreChan
+		}()
+
+		// 执行拓扑探测逻辑
+		enodes, err := c.disc.LookupWorker(n)
+		if err != nil {
+			fmt.Println("findnode失败:", n.ID().GoString())
+			return
+		}
+		enodesall, err := c.disc.LookupWorkerall(n)
+		if err != nil {
+			fmt.Println("LookupWorkerall失败:", n.ID().GoString())
+			return
+		}
+		fmt.Println("邻居节点数量:", len(enodesall))
+		enodes = append(enodes, enodesall...)
+		// 去重
+		uniqueNodes := make([]*enode.Node, 0)
+		seen := make(map[enode.ID]struct{})
+		for _, node := range enodes {
+			if _, ok := seen[node.ID()]; !ok {
+				seen[node.ID()] = struct{}{}
+				uniqueNodes = append(uniqueNodes, node)
+			}
+		}
+		err = AddPeerToNeo4j(node, uniqueNodes)
 		if err != nil {
 			fmt.Printf("节点%v的邻居节点关系写入失败:%v\n", node, err)
 		}
-	}
+	}(node)
 }
 
 func AddPeerToNeo4j(n *enode.Node, r []*enode.Node) error {
@@ -221,6 +288,7 @@ func (c *crawler) selectPendingAndExecute(ctx context.Context) {
 			return
 		default:
 			c.jobs <- req
+			fmt.Printf("job通道情况: len(jobs)=%d, cap(jobs)=%d\n", len(c.jobs), cap(c.jobs))
 		}
 	}
 }
@@ -303,13 +371,13 @@ func (c *crawler) collectNodeInfoRetryer(ctx context.Context, peer *models.Peer)
 		} else {
 			peer.SetProtocolVersion(pv)
 		}
-		
+
 		var protocols []string
 		protocols, err = c.host.GetProtocols(peer.ID)
 		if err != nil {
 			continue
 		} else {
-			fmt.Println("支持的协议列表:", protocols)
+			peer.SetProtocols(protocols)
 		}
 
 		var alladdrs []ma.Multiaddr

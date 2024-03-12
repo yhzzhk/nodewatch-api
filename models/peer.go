@@ -149,6 +149,7 @@ type Peer struct {
 	NextForkVersion common.Version    `json:"next_fork_version" bson:"next_fork_version"`
 
 	ProtocolVersion string       `json:"protocol_version,omitempty" bson:"protocol_version"`
+	Protocols       []string     `json:"protocols,omitempty" bson:"protocols"`
 	UserAgent       *UserAgent   `json:"user_agent,omitempty" bson:"user_agent"`
 	UserAgentRaw    string       `json:"user_agent_raw" bson:"user_agent_raw"`
 	GeoLocation     *GeoLocation `json:"geo_location" bson:"geo_location"`
@@ -202,6 +203,10 @@ func NewPeer(node *enode.Node, eth2Data *common.Eth2Data) (*Peer, error) {
 // SetProtocolVersion sets peer's protocol version
 func (p *Peer) SetProtocolVersion(pv string) {
 	p.ProtocolVersion = pv
+}
+
+func (p *Peer) SetProtocols(ps []string) {
+	p.Protocols = ps
 }
 
 // SetUserAgent sets peer's agent info
